@@ -61,7 +61,7 @@ class D3QNNetwork(nn.Module):
         with torch.no_grad():
             sample = torch.zeros(1, *input_shape, dtype=torch.float32)
             features = self.feature_extractor(sample)
-            return int(features.view(1, -1).size(1))
+            return int(features.reshape(1, -1).size(1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -78,7 +78,7 @@ class D3QNNetwork(nn.Module):
 
         x = x.float()
         features = self.feature_extractor(x)
-        features = features.view(features.size(0), -1)
+        features = features.reshape(features.size(0), -1)
 
         value = self.value_stream(features)
         advantage = self.advantage_stream(features)
