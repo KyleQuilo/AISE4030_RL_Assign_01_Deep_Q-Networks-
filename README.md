@@ -48,7 +48,9 @@ The custom reward wrapper also applies:
 
 - x position progress reward
 - time penalty
+- flag completion bonus
 - death penalty
+- stagnation penalty on early truncation
 - reward clipping to `[-15, 15]`
 
 ## Repository Structure
@@ -194,6 +196,8 @@ agent_type: d3qn_er
 ```yaml
 agent_type: d3qn_per
 ```
+
+### Adjusted max steps per episode to 1000 to speed up training.  Before adjustment training was taking 1 hour/500 episodes
 
 ### Current Key Hyperparameters
 ```yaml
@@ -360,3 +364,45 @@ This project was organized to make it easy to:
 - keep experiments consistent
 - compare replay strategies fairly
 - generate plots directly for the final report
+
+## Training Efficiency Notes
+The codebase includes a small set of implementation-level optimizations to reduce CPU overhead during training while preserving the assignment's fairness requirement that the only experimental difference between agents is the experience management strategy.
+
+### Implementation Optimizations Applied
+- action selection and target computation use PyTorch inference mode to reduce autograd overhead
+- gradient updates use `optimizer.zero_grad(set_to_none=True)` to reduce optimizer memory work
+- repeated state conversions in the training loop use `np.asarray(...)` to avoid unnecessary copies when possible
+- the PER buffer caches the current maximum priority instead of rescanning the full sum tree on every insertion
+
+These changes do **not** alter the Dueling Network architecture, Double DQN target computation, replay behavior definitions, or the intended differences between `d3qn`, `d3qn_er`, and `d3qn_per`.
+
+### Parameter Adjustments Relevant to the Assignment
+- `save_every` was increased from `100` to `500`
+- `log_every` was increased from `10` to `50`
+
+These changes reduce checkpoint and console overhead only. They are not part of the assignment's comparison hyperparameters and do not affect the learning rule.
+
+### Assignment Hyperparameters Kept Unchanged
+The following assignment-relevant settings were intentionally left unchanged in the default configuration so the comparison remains fair across all three agents:
+
+- total training episodes
+- replay buffer batch size
+- replay buffer capacity
+- learning starts threshold
+- learning rate
+- discount factor (`gamma`)
+- epsilon start / minimum / decay
+- target network sync frequency
+- PER `alpha`
+- PER `beta_start` and `beta_end`
+- PER `epsilon`
+- gradient clipping
+- preprocessing stack: `SkipFrame(4)`, grayscale, resize to `84x84`, and frame stack of `4`
+
+If you later reduce `total_episodes` or `max_steps_per_episode` for CPU-only runs, apply the same change to all three agents and document it clearly in the report.
+
+The default preprocessing keeps `frame_skip: 4` in `config.yaml`. If you increase `frame_skip`, treat it as a documented preprocessing change and apply the same value to all three agents.
+
+Current reward shaping in `environment.py` uses a stronger forward-progress term, a smaller time penalty, a large terminal bonus for reaching the flag, and a death penalty. Forward progress is prevented from becoming negative unless Mario dies on that step.
+
+The environment also truncates an episode early if Mario fails to make forward progress for too many consecutive agent steps. This stagnation termination uses a smaller penalty than death and is tracked separately from the death penalty.

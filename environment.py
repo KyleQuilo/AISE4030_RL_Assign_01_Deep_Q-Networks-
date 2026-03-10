@@ -57,17 +57,28 @@ class MarioRewardWrapper(gym.Wrapper):
     and a death penalty, then clips the result to [-15, 15].
     """
 
-    def __init__(self, env: gym.Env, time_penalty: float = -0.1, death_penalty: float = -15.0) -> None:
+    def __init__(
+        self,
+        env: gym.Env,
+        progress_scale: float = 0.2,
+        time_penalty: float = -0.02,
+        flag_reward: float = 50.0,
+        death_penalty: float = -15.0,
+    ) -> None:
         """
         Initializes the reward wrapper.
 
         Args:
             env (gym.Env): The base environment.
+            progress_scale (float): Reward multiplier for forward x-position progress.
             time_penalty (float): Constant penalty applied each step.
+            flag_reward (float): Bonus reward applied when Mario reaches the flag.
             death_penalty (float): Penalty applied when Mario dies.
         """
         super().__init__(env)
+        self.progress_scale = progress_scale
         self.time_penalty = time_penalty
+        self.flag_reward = flag_reward
         self.death_penalty = death_penalty
         self.prev_x = 0
 
@@ -99,7 +110,14 @@ class MarioRewardWrapper(gym.Wrapper):
         delta_x = current_x - self.prev_x
         self.prev_x = current_x
 
-        reward = 0.1 * float(delta_x) + self.time_penalty
+        progress_reward = self.progress_scale * float(delta_x)
+        if delta_x > 0:
+            reward = max(progress_reward + self.time_penalty, 0.0)
+        else:
+            reward = progress_reward + self.time_penalty
+
+        if bool(info.get("flag_get", False)):
+            reward += self.flag_reward
 
         died = terminated and not bool(info.get("flag_get", False))
         if died:
@@ -107,6 +125,72 @@ class MarioRewardWrapper(gym.Wrapper):
 
         reward = float(np.clip(reward, -15.0, 15.0))
         return obs, reward, terminated, truncated, info
+
+
+class StagnationTerminationWrapper(gym.Wrapper):
+    """
+    Truncates an episode if Mario fails to make forward progress for too long.
+    """
+
+    def __init__(
+        self,
+        env: gym.Env,
+        max_stagnation_steps: int = 150,
+        stagnation_penalty: float = -5.0,
+    ) -> None:
+        """
+        Initializes the stagnation termination wrapper.
+
+        Args:
+            env (gym.Env): The base environment.
+            max_stagnation_steps (int): Max consecutive agent steps without forward progress.
+            stagnation_penalty (float): Penalty applied when truncating for stagnation.
+        """
+        super().__init__(env)
+        self.max_stagnation_steps = max_stagnation_steps
+        self.stagnation_penalty = stagnation_penalty
+        self.prev_x = 0
+        self.stagnation_steps = 0
+
+    def reset(self, **kwargs) -> Tuple[np.ndarray, dict]:
+        """
+        Resets the environment and stagnation tracking state.
+
+        Returns:
+            Tuple[np.ndarray, dict]: Reset observation and info dictionary.
+        """
+        obs, info = _reset_compat(self.env, **kwargs)
+        self.prev_x = int(info.get("x_pos", 0))
+        self.stagnation_steps = 0
+        return obs, info
+
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, dict]:
+        """
+        Steps the environment and truncates if Mario stagnates for too long.
+
+        Args:
+            action (int): Selected action.
+
+        Returns:
+            Tuple[np.ndarray, float, bool, bool, dict]:
+                Observation, reward, terminated, truncated, info.
+        """
+        obs, reward, terminated, truncated, info = _step_compat(self.env, action)
+
+        current_x = int(info.get("x_pos", self.prev_x))
+        if current_x > self.prev_x:
+            self.stagnation_steps = 0
+        else:
+            self.stagnation_steps += 1
+        self.prev_x = current_x
+
+        if not terminated and not truncated and self.stagnation_steps >= self.max_stagnation_steps:
+            truncated = True
+            reward = float(reward) + self.stagnation_penalty
+            info = dict(info)
+            info["stagnation_terminated"] = True
+
+        return obs, float(reward), terminated, truncated, info
 
 
 class SkipFrame(gym.Wrapper):
@@ -238,6 +322,7 @@ class FrameStackObservation(gym.Wrapper):
         super().__init__(env)
         self.num_stack = num_stack
         self.frames: Deque[np.ndarray] = deque(maxlen=num_stack)
+        self.stacked_obs: Optional[np.ndarray] = None
 
         obs_shape = self.observation_space.shape
         self.observation_space = spaces.Box(
@@ -254,7 +339,9 @@ class FrameStackObservation(gym.Wrapper):
         Returns:
             np.ndarray: Stacked frame tensor with shape (num_stack, H, W).
         """
-        return np.stack(list(self.frames), axis=0).astype(np.float32)
+        if self.stacked_obs is None:
+            self.stacked_obs = np.stack(list(self.frames), axis=0).astype(np.float32)
+        return self.stacked_obs
 
     def reset(self, **kwargs) -> Tuple[np.ndarray, dict]:
         """
@@ -267,6 +354,11 @@ class FrameStackObservation(gym.Wrapper):
         self.frames.clear()
         for _ in range(self.num_stack):
             self.frames.append(obs)
+        self.stacked_obs = np.repeat(
+            np.asarray(obs, dtype=np.float32)[np.newaxis, ...],
+            self.num_stack,
+            axis=0,
+        )
         return self._get_observation(), info
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, dict]:
@@ -282,6 +374,11 @@ class FrameStackObservation(gym.Wrapper):
         """
         obs, reward, terminated, truncated, info = _step_compat(self.env, action)
         self.frames.append(obs)
+        if self.stacked_obs is None:
+            self.stacked_obs = np.stack(list(self.frames), axis=0).astype(np.float32)
+        else:
+            self.stacked_obs[:-1] = self.stacked_obs[1:]
+            self.stacked_obs[-1] = np.asarray(obs, dtype=np.float32)
         return self._get_observation(), reward, terminated, truncated, info
 
 
@@ -289,6 +386,7 @@ def make_mario_env(
     env_id: str = "SuperMarioBros-1-1-v3",
     render_mode: Optional[str] = None,
     seed: Optional[int] = None,
+    frame_skip: int = 4,
 ):
     """
     Creates the fully wrapped Mario environment.
@@ -297,6 +395,7 @@ def make_mario_env(
         env_id (str): Mario environment ID.
         render_mode (Optional[str]): Render mode passed to the environment.
         seed (Optional[int]): Optional random seed.
+        frame_skip (int): Number of frames to repeat each selected action.
 
     Returns:
         tuple:
@@ -312,7 +411,8 @@ def make_mario_env(
 
     env = JoypadSpace(env, RIGHT_ONLY)
     env = MarioRewardWrapper(env)
-    env = SkipFrame(env, skip=4)
+    env = SkipFrame(env, skip=frame_skip)
+    env = StagnationTerminationWrapper(env)
     env = GrayScaleObservation(env)
     env = ResizeObservation(env, shape=84)
     env = FrameStackObservation(env, num_stack=4)

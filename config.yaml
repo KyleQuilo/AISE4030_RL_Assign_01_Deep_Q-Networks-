@@ -1,8 +1,9 @@
-agent_type: d3qn_per
+agent_type: d3qn
 env_id: SuperMarioBros-1-1-v3
-render_mode: null
+render_mode: none
 seed: 42
 device: auto
+frame_skip: 4
 
 training:
   total_episodes: 5000
@@ -14,8 +15,8 @@ training:
   epsilon_decay: 0.99999975
   target_sync_steps: 10000
   gradient_clip: 1.0
-  save_every: 100
-  log_every: 10
+  save_every: 50
+  log_every: 5
   moving_average_window: 50
 
 replay:

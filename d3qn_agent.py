@@ -162,7 +162,7 @@ class D3QNAgent:
         else:
             loss = losses.mean()
 
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.gradient_clip)
         self.optimizer.step()
@@ -192,10 +192,10 @@ class D3QNAgent:
         """
         self.global_step += 1
 
-        states = np.expand_dims(state, axis=0).astype(np.float32)
+        states = np.expand_dims(np.asarray(state, dtype=np.float32), axis=0)
         actions = np.array([action], dtype=np.int64)
         rewards = np.array([reward], dtype=np.float32)
-        next_states = np.expand_dims(next_state, axis=0).astype(np.float32)
+        next_states = np.expand_dims(np.asarray(next_state, dtype=np.float32), axis=0)
         dones = np.array([float(done)], dtype=np.float32)
 
         loss, _ = self._learn_from_batch(states, actions, rewards, next_states, dones)
@@ -213,13 +213,32 @@ class D3QNAgent:
         Args:
             filepath (str): Output file path.
         """
-        torch.save(
-            {
-                "policy_state_dict": self.policy_net.state_dict(),
-                "target_state_dict": self.target_net.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
-                "epsilon": self.epsilon,
-                "global_step": self.global_step,
-            },
-            filepath,
-        )
+        torch.save(self.get_checkpoint_state(), filepath)
+
+    def get_checkpoint_state(self) -> Dict:
+        """
+        Returns the serializable training state for checkpointing.
+
+        Returns:
+            Dict: Agent checkpoint state.
+        """
+        return {
+            "policy_state_dict": self.policy_net.state_dict(),
+            "target_state_dict": self.target_net.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "epsilon": self.epsilon,
+            "global_step": self.global_step,
+        }
+
+    def load_checkpoint_state(self, checkpoint: Dict) -> None:
+        """
+        Restores the agent from a serialized checkpoint state.
+
+        Args:
+            checkpoint (Dict): Agent checkpoint state.
+        """
+        self.policy_net.load_state_dict(checkpoint["policy_state_dict"])
+        self.target_net.load_state_dict(checkpoint["target_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self.epsilon = float(checkpoint["epsilon"])
+        self.global_step = int(checkpoint["global_step"])

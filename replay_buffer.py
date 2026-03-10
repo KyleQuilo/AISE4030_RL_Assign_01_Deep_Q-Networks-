@@ -73,6 +73,28 @@ class ReplayBuffer:
             np.array(dones, dtype=np.float32),
         )
 
+    def state_dict(self) -> dict:
+        """
+        Serializes the replay buffer for checkpointing.
+
+        Returns:
+            dict: Replay buffer state.
+        """
+        return {
+            "capacity": self.capacity,
+            "buffer": list(self.buffer),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """
+        Restores the replay buffer from a checkpoint.
+
+        Args:
+            state (dict): Serialized replay buffer state.
+        """
+        self.capacity = int(state["capacity"])
+        self.buffer = deque(state["buffer"], maxlen=self.capacity)
+
     def __len__(self) -> int:
         """
         Returns the current number of stored transitions.
