@@ -6,16 +6,49 @@ from collections import deque
 from typing import Deque, Optional, Tuple
 
 import cv2
-import gymnasium as gym
+import gym
 import gym_super_mario_bros
 import numpy as np
-from gymnasium import spaces
+from gym import spaces
 from nes_py.wrappers import JoypadSpace
 
 RIGHT_ONLY = [
     ["right"],
     ["right", "A"],
 ]
+
+
+def _reset_compat(env: gym.Env, **kwargs) -> Tuple[np.ndarray, dict]:
+    """
+    Resets an environment across old and new Gym-style APIs.
+    """
+    try:
+        result = env.reset(**kwargs)
+    except TypeError:
+        seed = kwargs.get("seed", None)
+        if seed is not None and hasattr(env, "seed"):
+            env.seed(seed)
+        result = env.reset()
+
+    if isinstance(result, tuple) and len(result) == 2:
+        obs, info = result
+        return obs, info
+
+    return result, {}
+
+
+def _step_compat(env: gym.Env, action: int) -> Tuple[np.ndarray, float, bool, bool, dict]:
+    """
+    Steps an environment across old and new Gym-style APIs.
+    """
+    result = env.step(action)
+
+    if isinstance(result, tuple) and len(result) == 5:
+        obs, reward, terminated, truncated, info = result
+        return obs, reward, terminated, truncated, info
+
+    obs, reward, done, info = result
+    return obs, reward, bool(done), False, info
 
 
 class MarioRewardWrapper(gym.Wrapper):
@@ -45,7 +78,7 @@ class MarioRewardWrapper(gym.Wrapper):
         Returns:
             Tuple[np.ndarray, dict]: Reset observation and info dictionary.
         """
-        obs, info = self.env.reset(**kwargs)
+        obs, info = _reset_compat(self.env, **kwargs)
         self.prev_x = int(info.get("x_pos", 0))
         return obs, info
 
@@ -60,7 +93,7 @@ class MarioRewardWrapper(gym.Wrapper):
             Tuple[np.ndarray, float, bool, bool, dict]:
                 Observation, shaped reward, terminated, truncated, info.
         """
-        obs, _, terminated, truncated, info = self.env.step(action)
+        obs, _, terminated, truncated, info = _step_compat(self.env, action)
 
         current_x = int(info.get("x_pos", self.prev_x))
         delta_x = current_x - self.prev_x
@@ -109,7 +142,7 @@ class SkipFrame(gym.Wrapper):
         info = {}
 
         for _ in range(self.skip):
-            obs, reward, terminated, truncated, info = self.env.step(action)
+            obs, reward, terminated, truncated, info = _step_compat(self.env, action)
             total_reward += float(reward)
             if terminated or truncated:
                 break
@@ -230,7 +263,7 @@ class FrameStackObservation(gym.Wrapper):
         Returns:
             Tuple[np.ndarray, dict]: Stacked observation and info dictionary.
         """
-        obs, info = self.env.reset(**kwargs)
+        obs, info = _reset_compat(self.env, **kwargs)
         self.frames.clear()
         for _ in range(self.num_stack):
             self.frames.append(obs)
@@ -247,7 +280,7 @@ class FrameStackObservation(gym.Wrapper):
             Tuple[np.ndarray, float, bool, bool, dict]:
                 Stacked observation, reward, terminated, truncated, info.
         """
-        obs, reward, terminated, truncated, info = self.env.step(action)
+        obs, reward, terminated, truncated, info = _step_compat(self.env, action)
         self.frames.append(obs)
         return self._get_observation(), reward, terminated, truncated, info
 
@@ -285,7 +318,7 @@ def make_mario_env(
     env = FrameStackObservation(env, num_stack=4)
 
     if seed is not None:
-        env.reset(seed=seed)
+        _reset_compat(env, seed=seed)
 
     observation_shape = env.observation_space.shape
     action_size = env.action_space.n
