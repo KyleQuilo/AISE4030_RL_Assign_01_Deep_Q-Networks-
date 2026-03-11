@@ -60,8 +60,8 @@ class MarioRewardWrapper(gym.Wrapper):
     def __init__(
         self,
         env: gym.Env,
-        progress_scale: float = 0.05,
-        time_penalty: float = -0.02,
+        progress_scale: float = 0.0250,
+        time_penalty: float = -0.005,
         flag_reward: float = 50.0,
         death_penalty: float = -15.0,
     ) -> None:
@@ -136,7 +136,7 @@ class StagnationTerminationWrapper(gym.Wrapper):
         self,
         env: gym.Env,
         max_stagnation_steps: int = 150,
-        stagnation_penalty: float = -5.0,
+        stagnation_penalty: float = -10.0,
     ) -> None:
         """
         Initializes the stagnation termination wrapper.

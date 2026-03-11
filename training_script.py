@@ -17,8 +17,10 @@ from environment import make_mario_env
 from utils import (
     ensure_dir,
     load_config,
+    load_history,
     maybe_create_comparison_plots,
     plot_agent_history,
+    resolve_paths,
     save_history,
     set_seed,
 )
@@ -46,9 +48,6 @@ def get_resume_signature(config: Dict) -> Dict:
                 "max_steps_per_episode",
                 "learning_rate",
                 "gamma",
-                "epsilon_start",
-                "epsilon_min",
-                "epsilon_decay",
                 "target_sync_steps",
                 "gradient_clip",
             )
@@ -99,7 +98,6 @@ def save_training_checkpoint(
     agent,
     filepath: str,
     config: Dict,
-    history: Dict,
     completed_episodes: int,
 ) -> None:
     """
@@ -109,19 +107,14 @@ def save_training_checkpoint(
         agent: Active agent instance.
         filepath (str): Checkpoint path.
         config (Dict): Full configuration.
-        history (Dict): Training history so far.
         completed_episodes (int): Number of finished episodes.
     """
     checkpoint = {
         "resume_signature": get_resume_signature(config),
         "completed_episodes": int(completed_episodes),
-        "history": history,
         "agent_state": agent.get_checkpoint_state(),
     }
     torch.save(checkpoint, filepath)
-
-    rolling_checkpoint = os.path.join(os.path.dirname(filepath), "checkpoint_latest.pth")
-    torch.save(checkpoint, rolling_checkpoint)
 
 
 def try_resume_training(agent, config: Dict, results_dir: str):
@@ -141,13 +134,17 @@ def try_resume_training(agent, config: Dict, results_dir: str):
     if checkpoint_path is None:
         return 1, None, None
 
-    checkpoint = torch.load(checkpoint_path, map_location=agent.device)
+    checkpoint = torch.load(checkpoint_path, map_location=agent.device, weights_only=False)
     if checkpoint.get("resume_signature") != get_resume_signature(config):
         return 1, None, None
 
     agent.load_checkpoint_state(checkpoint["agent_state"])
     completed_episodes = int(checkpoint.get("completed_episodes", 0))
     history = checkpoint.get("history", None)
+    if history is None:
+        history_path = os.path.join(results_dir, "history.json")
+        if os.path.exists(history_path):
+            history = load_history(history_path)
     return completed_episodes + 1, history, checkpoint_path
 
 
@@ -188,7 +185,7 @@ def get_results_dir(config: Dict) -> str:
         str: Results directory path.
     """
     agent_type = config["agent_type"].lower()
-    paths_cfg = config["paths"]
+    paths_cfg = resolve_paths(config)
 
     if agent_type == "d3qn":
         return paths_cfg["d3qn_results"]
@@ -237,6 +234,10 @@ def train() -> None:
         "epsilon_values": [],
         "flag_reached": [],
         "flag_reach_rate_percent": [],
+        "end_reason": [],
+        "death_rate_percent": [],
+        "stagnation_rate_percent": [],
+        "timeout_rate_percent": [],
     }
     start_episode, resumed_history, resumed_checkpoint = try_resume_training(agent, config, results_dir)
     if resumed_history is not None:
@@ -262,6 +263,8 @@ def train() -> None:
         episode_loss_count = 0
         episode_steps = 0
         reached_flag = False
+        end_reason = "timeout"
+        last_info = {}
 
         done = False
         while not done and episode_steps < max_steps_per_episode:
@@ -270,6 +273,7 @@ def train() -> None:
             next_state = np.asarray(next_state, dtype=np.float32)
             done = bool(terminated or truncated)
             reached_flag = reached_flag or bool(info.get("flag_get", False))
+            last_info = info
 
             loss = agent.step(state, action, reward, next_state, done)
 
@@ -281,6 +285,13 @@ def train() -> None:
                 episode_loss_total += float(loss)
                 episode_loss_count += 1
 
+        if reached_flag:
+            end_reason = "flag"
+        elif bool(last_info.get("stagnation_terminated", False)):
+            end_reason = "stagnation"
+        elif done:
+            end_reason = "death"
+
         mean_loss = episode_loss_total / episode_loss_count if episode_loss_count > 0 else 0.0
 
         history["episode_rewards"].append(float(episode_reward))
@@ -288,26 +299,48 @@ def train() -> None:
         history["episode_lengths"].append(int(episode_steps))
         history["epsilon_values"].append(float(agent.epsilon))
         history["flag_reached"].append(int(reached_flag))
+        history["end_reason"].append(end_reason)
         history["flag_reach_rate_percent"].append(
             100.0 * float(np.mean(history["flag_reached"]))
+        )
+        history["death_rate_percent"].append(
+            100.0 * float(np.mean([reason == "death" for reason in history["end_reason"]]))
+        )
+        history["stagnation_rate_percent"].append(
+            100.0 * float(np.mean([reason == "stagnation" for reason in history["end_reason"]]))
+        )
+        history["timeout_rate_percent"].append(
+            100.0 * float(np.mean([reason == "timeout" for reason in history["end_reason"]]))
         )
 
         if episode % log_every == 0 or episode == 1:
             recent_rewards = history["episode_rewards"][-window:]
             moving_reward = float(np.mean(recent_rewards))
             recent_flag_rate = 100.0 * float(np.mean(history["flag_reached"][-window:]))
+            recent_death_rate = 100.0 * float(
+                np.mean([reason == "death" for reason in history["end_reason"][-window:]])
+            )
+            recent_stagnation_rate = 100.0 * float(
+                np.mean([reason == "stagnation" for reason in history["end_reason"][-window:]])
+            )
+            recent_timeout_rate = 100.0 * float(
+                np.mean([reason == "timeout" for reason in history["end_reason"][-window:]])
+            )
             print(
                 f"Episode {episode}/{total_episodes} | "
                 f"Reward: {episode_reward:.2f} | "
                 f"Avg Reward: {moving_reward:.2f} | "
                 f"Loss: {mean_loss:.4f} | "
                 f"Epsilon: {agent.epsilon:.4f} | "
-                f"Flag Rate: {recent_flag_rate:.1f}%"
+                f"Flag Rate: {recent_flag_rate:.1f}% | "
+                f"Death: {recent_death_rate:.1f}% | "
+                f"Stag: {recent_stagnation_rate:.1f}% | "
+                f"Timeout: {recent_timeout_rate:.1f}%"
             )
 
         if episode % save_every == 0:
-            checkpoint_path = os.path.join(results_dir, f"checkpoint_ep_{episode}.pth")
-            save_training_checkpoint(agent, checkpoint_path, config, history, episode)
+            checkpoint_path = os.path.join(results_dir, "checkpoint_latest.pth")
+            save_training_checkpoint(agent, checkpoint_path, config, episode)
             save_history(history, results_dir, filename="history.json")
 
     final_model_path = os.path.join(results_dir, "final_model.pth")

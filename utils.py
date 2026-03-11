@@ -37,6 +37,27 @@ def load_config(config_path: str = "config.yaml") -> Dict:
         return yaml.safe_load(file)
 
 
+def resolve_paths(config: Dict) -> Dict:
+    """
+    Resolves output paths, optionally nesting them under a run version.
+
+    Args:
+        config (Dict): Full configuration dictionary.
+
+    Returns:
+        Dict: Resolved path mapping.
+    """
+    paths_cfg = dict(config["paths"])
+    run_version = config.get("run_version", None)
+    if run_version in (None, ""):
+        return paths_cfg
+
+    return {
+        key: os.path.join(path, str(run_version))
+        for key, path in paths_cfg.items()
+    }
+
+
 def set_seed(seed: int) -> None:
     """
     Sets random seeds for reproducibility.
@@ -175,6 +196,20 @@ def plot_agent_history(history: Dict, save_dir: str, window: int = 50) -> None:
             window=window,
         )
 
+    for metric_key, filename, title in (
+        ("death_rate_percent", "death_rate_curve.png", "Death Rate"),
+        ("stagnation_rate_percent", "stagnation_rate_curve.png", "Stagnation Rate"),
+        ("timeout_rate_percent", "timeout_rate_curve.png", "Timeout Rate"),
+    ):
+        if metric_key in history:
+            plot_metric(
+                history[metric_key],
+                os.path.join(save_dir, filename),
+                title,
+                "Percent",
+                window=window,
+            )
+
 
 def plot_overlay(
     histories: Dict[str, Dict],
@@ -216,7 +251,7 @@ def maybe_create_comparison_plots(config: Dict) -> None:
     Args:
         config (Dict): Full configuration dictionary.
     """
-    paths_cfg = config["paths"]
+    paths_cfg = resolve_paths(config)
     comparison_dir = paths_cfg["comparison_results"]
     ensure_dir(comparison_dir)
 
@@ -263,3 +298,18 @@ def maybe_create_comparison_plots(config: Dict) -> None:
             ylabel="Percent",
             window=window,
         )
+
+    for metric_key, filename, title in (
+        ("death_rate_percent", "death_rate_overlay.png", "Death Rate Comparison"),
+        ("stagnation_rate_percent", "stagnation_rate_overlay.png", "Stagnation Rate Comparison"),
+        ("timeout_rate_percent", "timeout_rate_overlay.png", "Timeout Rate Comparison"),
+    ):
+        if all(metric_key in history for history in histories.values()):
+            plot_overlay(
+                histories,
+                os.path.join(comparison_dir, filename),
+                metric_key=metric_key,
+                title=title,
+                ylabel="Percent",
+                window=window,
+            )
