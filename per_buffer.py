@@ -111,6 +111,34 @@ class SumTree:
         data_index = leaf - self.capacity + 1
         return leaf, float(self.tree[leaf]), self.data[data_index]
 
+    def state_dict(self) -> dict:
+        """
+        Serializes the sum tree for checkpointing.
+
+        Returns:
+            dict: Sum tree state.
+        """
+        return {
+            "capacity": self.capacity,
+            "tree": self.tree.copy(),
+            "data": list(self.data),
+            "write": self.write,
+            "size": self.size,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """
+        Restores the sum tree from a checkpoint.
+
+        Args:
+            state (dict): Serialized sum tree state.
+        """
+        self.capacity = int(state["capacity"])
+        self.tree = np.array(state["tree"], dtype=np.float32, copy=True)
+        self.data = list(state["data"])
+        self.write = int(state["write"])
+        self.size = int(state["size"])
+
 
 class PrioritizedReplayBuffer:
     """
@@ -130,6 +158,7 @@ class PrioritizedReplayBuffer:
         self.alpha = alpha
         self.epsilon = epsilon
         self.tree = SumTree(capacity)
+        self.max_priority = 1.0
 
     def _priority_from_td_error(self, td_error: float) -> float:
         """
@@ -164,7 +193,7 @@ class PrioritizedReplayBuffer:
             priority (Optional[float]): Optional initial priority.
         """
         if priority is None:
-            priority = self.tree.max_priority
+            priority = self.max_priority
 
         transition = (
             np.array(state, copy=True, dtype=np.float32),
@@ -173,7 +202,14 @@ class PrioritizedReplayBuffer:
             np.array(next_state, copy=True, dtype=np.float32),
             float(done),
         )
-        self.tree.add(float(priority), transition)
+        priority = float(priority)
+        tree_index = self.tree.write + self.tree.capacity - 1
+        overwritten_priority = float(self.tree.tree[tree_index])
+        self.tree.add(priority, transition)
+        if overwritten_priority >= self.max_priority and priority < overwritten_priority:
+            self.max_priority = self.tree.max_priority
+        else:
+            self.max_priority = max(self.max_priority, priority)
 
     def sample(self, batch_size: int, beta: float):
         """
@@ -228,8 +264,13 @@ class PrioritizedReplayBuffer:
             td_errors (np.ndarray): New TD errors for sampled transitions.
         """
         for index, td_error in zip(indices, td_errors):
+            previous_priority = float(self.tree.tree[int(index)])
             priority = self._priority_from_td_error(float(td_error))
             self.tree.update(int(index), priority)
+            if previous_priority >= self.max_priority and priority < previous_priority:
+                self.max_priority = self.tree.max_priority
+            else:
+                self.max_priority = max(self.max_priority, priority)
 
     def get_max_priority(self) -> float:
         """
@@ -238,7 +279,36 @@ class PrioritizedReplayBuffer:
         Returns:
             float: Maximum stored priority.
         """
-        return self.tree.max_priority
+        return self.max_priority
+
+    def state_dict(self) -> dict:
+        """
+        Serializes the PER buffer for checkpointing.
+
+        Returns:
+            dict: PER buffer state.
+        """
+        return {
+            "capacity": self.capacity,
+            "alpha": self.alpha,
+            "epsilon": self.epsilon,
+            "max_priority": self.max_priority,
+            "tree": self.tree.state_dict(),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """
+        Restores the PER buffer from a checkpoint.
+
+        Args:
+            state (dict): Serialized PER buffer state.
+        """
+        self.capacity = int(state["capacity"])
+        self.alpha = float(state["alpha"])
+        self.epsilon = float(state["epsilon"])
+        self.max_priority = float(state["max_priority"])
+        self.tree = SumTree(self.capacity)
+        self.tree.load_state_dict(state["tree"])
 
     def __len__(self) -> int:
         """

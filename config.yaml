@@ -1,26 +1,29 @@
 agent_type: d3qn_per
 env_id: SuperMarioBros-1-1-v3
-render_mode: null
+render_mode: none
 seed: 42
 device: auto
+frame_skip: 6
+run_version: v1
+
 
 training:
-  total_episodes: 5000
-  max_steps_per_episode: 5000
+  total_episodes: 500
+  max_steps_per_episode: 50000
   learning_rate: 0.00025
-  gamma: 0.9
+  gamma: 0.975
   epsilon_start: 1.0
-  epsilon_min: 0.1
-  epsilon_decay: 0.99999975
-  target_sync_steps: 10000
+  epsilon_min: 0.01
+  epsilon_decay: 0.9999
+  target_sync_steps: 1000
   gradient_clip: 1.0
-  save_every: 100
-  log_every: 10
+  save_every: 500
+  log_every: 5
   moving_average_window: 50
 
 replay:
   batch_size: 32
-  capacity: 100000
+  capacity: 10000
   learning_starts: 1000
 
 per:

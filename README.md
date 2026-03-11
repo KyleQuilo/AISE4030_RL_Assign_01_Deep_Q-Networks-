@@ -48,7 +48,9 @@ The custom reward wrapper also applies:
 
 - x position progress reward
 - time penalty
+- flag completion bonus
 - death penalty
+- stagnation penalty on early truncation
 - reward clipping to `[-15, 15]`
 
 ## Repository Structure
@@ -175,9 +177,11 @@ Setup is complete!
 ## Configuration
 All training settings are controlled through `config.yaml`.
 
+If `run_version` is set in `config.yaml`, outputs are written into versioned subfolders such as `d3qn_results/<run_version>/`, `d3qn_er_results/<run_version>/`, `d3qn_per_results/<run_version>/`, and `comparison_results/<run_version>/`.
+
 ### Current Default Agent
 ```yaml
-agent_type: d3qn_per
+agent_type: d3qn
 ```
 
 ### Supported Agent Types
@@ -197,20 +201,28 @@ agent_type: d3qn_per
 
 ### Current Key Hyperparameters
 ```yaml
+render_mode: human
+device: auto
+frame_skip: 8
+run_version: v5
+
 training:
-  total_episodes: 5000
-  max_steps_per_episode: 5000
+  total_episodes: 500
+  max_steps_per_episode: 50000
   learning_rate: 0.00025
   gamma: 0.9
   epsilon_start: 1.0
-  epsilon_min: 0.1
-  epsilon_decay: 0.99999975
-  target_sync_steps: 10000
+  epsilon_min: 0.01
+  epsilon_decay: 0.9995
+  target_sync_steps: 1000
   gradient_clip: 1.0
+  save_every: 25
+  log_every: 5
+  moving_average_window: 50
 
 replay:
   batch_size: 32
-  capacity: 100000
+  capacity: 10000
   learning_starts: 1000
 
 per:
@@ -275,6 +287,10 @@ Each folder may contain:
 - `history.json`
 - `reward_curve.png`
 - `loss_curve.png`
+- `flag_rate_curve.png`
+- `death_rate_curve.png`
+- `stagnation_rate_curve.png`
+- `timeout_rate_curve.png`
 
 If at least two agent histories are available, the project also generates overlay plots in:
 
@@ -284,6 +300,10 @@ These include:
 
 - `reward_overlay.png`
 - `loss_overlay.png`
+- `flag_rate_overlay.png`
+- `death_rate_overlay.png`
+- `stagnation_rate_overlay.png`
+- `timeout_rate_overlay.png`
 
 ## Training Workflow
 A typical workflow is:
@@ -360,3 +380,51 @@ This project was organized to make it easy to:
 - keep experiments consistent
 - compare replay strategies fairly
 - generate plots directly for the final report
+
+## Training Efficiency Notes
+The codebase includes a small set of implementation-level optimizations to reduce CPU overhead during training while preserving the assignment's fairness requirement that the only experimental difference between agents is the experience management strategy.
+
+### Implementation Optimizations Applied
+- action selection and target computation avoid unnecessary gradient tracking during evaluation passes
+- gradient updates use `optimizer.zero_grad(set_to_none=True)` to reduce optimizer memory work
+- repeated state conversions in the training loop use `np.asarray(...)` to avoid unnecessary copies when possible
+- the PER buffer caches the current maximum priority instead of rescanning the full sum tree on every insertion
+
+These changes do **not** alter the Dueling Network architecture, Double DQN target computation, replay behavior definitions, or the intended differences between `d3qn`, `d3qn_er`, and `d3qn_per`.
+
+### Parameter Adjustments Relevant to the Assignment
+- `frame_skip` was increased from `4` to `8`
+- `total_episodes` was reduced from `5000` to `500`
+- `epsilon_min` was reduced from `0.1` to `0.01`
+- `epsilon_decay` was adjusted from `0.99999975` to `0.9995`
+- `target_sync_steps` was reduced from `10000` to `1000`
+- `save_every` was reduced to `25`
+- `log_every` was reduced to `5`
+- `replay.capacity` was reduced from `100000` to `10000`
+
+These changes reflect a heavily compute-constrained run configuration. The exploration schedule was accelerated because the original schedule kept behavior highly random for too long relative to the shorter run budget.
+
+### Assignment Hyperparameters Kept Unchanged
+The following assignment-relevant settings were intentionally left unchanged in the default configuration so the comparison remains fair across all three agents:
+
+- total training episodes
+- replay buffer batch size
+- learning starts threshold
+- learning rate
+- discount factor (`gamma`)
+- epsilon start
+- PER `alpha`
+- PER `beta_start` and `beta_end`
+- PER `epsilon`
+- gradient clipping
+- grayscale, resize to `84x84`, and frame stack of `4`
+
+If you later reduce `total_episodes` or `max_steps_per_episode` for CPU-only runs, apply the same change to all three agents and document it clearly in the report.
+
+The current configuration uses `frame_skip: 8` in `config.yaml`. If you change `frame_skip`, treat it as a documented preprocessing change and apply the same value to all three agents.
+
+Current reward shaping in `environment.py` uses a heavily reduced forward-progress scale and time penalty so episode returns stay comparable to the stagnation, death, and flag-related penalties and bonuses. Forward progress is prevented from becoming negative unless Mario dies on that step.
+
+The environment also truncates an episode early if Mario fails to make forward progress for too many consecutive agent steps. This stagnation termination uses a smaller penalty than death and is tracked separately from the death penalty.
+
+Training results now also record how often Mario reaches the flag and how episodes end. Each run saves per-episode flag success and end-reason history in `history.json`, and writes flag, death, stagnation, and timeout rate curves to the corresponding results directory.

@@ -103,3 +103,24 @@ class D3QNPERAgent(D3QNAgent):
 
         self._update_epsilon()
         return loss
+
+    def get_checkpoint_state(self) -> Dict:
+        """
+        Returns the serializable training state for checkpointing.
+
+        Returns:
+            Dict: Agent checkpoint state.
+        """
+        checkpoint = super().get_checkpoint_state()
+        checkpoint["per_buffer_state"] = self.per_buffer.state_dict()
+        return checkpoint
+
+    def load_checkpoint_state(self, checkpoint: Dict) -> None:
+        """
+        Restores the agent from a serialized checkpoint state.
+
+        Args:
+            checkpoint (Dict): Agent checkpoint state.
+        """
+        super().load_checkpoint_state(checkpoint)
+        self.per_buffer.load_state_dict(checkpoint["per_buffer_state"])
